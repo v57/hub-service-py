@@ -125,6 +125,14 @@ class Service:
         self.channel.stream(path, lambda ctx: handler(ctx.body))
         return self
 
+    def app(self, app: Any) -> "Service":
+        """Register an app: header goes to the hub apps list and its path
+        serves the AppInterface as a stream (TS parity)."""
+        self.apps.append(app.header)
+        self._add_path(app.header.path, None)
+        self.channel.stream(app.header.path, lambda ctx: _yield_app_interface(app))
+        return self
+
     def _add_path(self, path: str, settings: ApiSettings | None) -> None:
         if settings is not None:
             if settings.permissions is not None and not settings.permissions.group:
@@ -213,3 +221,8 @@ class Service:
             await sender.send("hub/service/update", self.update())
         except Exception:
             pass
+
+
+async def _yield_app_interface(app: Any) -> AsyncIterator[Any]:
+    """Async generator yielding the AppInterface once (stream endpoint)."""
+    yield app.interface()
