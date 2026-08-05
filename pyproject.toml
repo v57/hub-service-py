@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.26.3"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hub-service-py"
+version = "0.1.0"
+description = "Python implementation of hub-service (lite): host post/stream APIs and apps on a hub"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Dmitry Kozlov" }]
+dependencies = [
+  "channel-py",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.1.0",
+]
+
+[tool.uv.sources]
+channel-py = { path = "../channel-py" }
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hub_service_py"]
