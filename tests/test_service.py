@@ -115,11 +115,13 @@ def test_app_interface_has_all_five_keys():
     assert interface["header"] == {"type": "app", "name": "Echo", "path": "echo/ui"}
     assert interface["top"] is None and interface["bottom"] is None
     assert interface["data"] == {"hello": "world"}
-    types = [e if isinstance(e, str) else e["type"] for e in interface["body"]]
+    types = ["string" if isinstance(e, str) else e["type"] for e in interface["body"]]
     assert types == ["string", "textField", "cell", "button"]
-    # Optional keys must be omitted, never null.
-    raw = json.dumps(interface)
-    assert "null" not in raw
+    # Optional keys in elements must be omitted, never null (top/bottom are
+    # intentionally null in the interface).
+    for element in interface["body"]:
+        if not isinstance(element, str):
+            assert "null" not in json.dumps(element)
 
 
 def test_elements_omit_optional_keys():
