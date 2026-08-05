@@ -159,3 +159,57 @@ class Service:
             if settings.limit is not None:
                 entry["limit"] = settings.limit
         return entry
+
+    def start(self) -> "Service":
+        """Connect to the hub.
+
+        On every (re)connect the profile update (if set) and the service
+        update are re-sent — the hub drops services on disconnect. Requires a
+        running asyncio event loop (call from an async context).
+        """
+        if self.sender is not None:
+            return self
+        self.sender = connect_channel(
+            self.channel,
+            self.address,
+            ConnectOptions(on_connect=self._on_connect),
+        )
+        return self
+
+    def send(self, path: str, body: Any = None, context: Any = None) -> Any:
+        """Call an API through the hub (client side). Await the result.
+
+        Raises ServiceNotStartedError if start() has not been called.
+        """
+        sender = self._sender_or_error()
+        return sender.send(path, body, context)
+
+    def values(self, path: str, body: Any = None, context: Any = None) -> Any:
+        """Open a stream call through the hub (client side).
+
+        Returns an async iterator of values. Raises ServiceNotStartedError if
+        start() has not been called.
+        """
+        sender = self._sender_or_error()
+        return sender.values(path, body, context)
+
+    def _sender_or_error(self) -> Any:
+        if self.sender is None:
+            raise ServiceNotStartedError("Service not started")
+        return self.sender
+
+    async def _on_connect(self, sender: Any) -> None:
+        try:
+            if self.profile is not None:
+                profile: dict[str, Any] = {}
+                if self.profile.name:
+                    profile["name"] = self.profile.name
+                if self.profile.icon is not None:
+                    profile["icon"] = self.profile.icon
+                await sender.send("hub/profile/update", profile)
+        except Exception:
+            pass
+        try:
+            await sender.send("hub/service/update", self.update())
+        except Exception:
+            pass
