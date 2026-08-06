@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Dmitry Kozlov" }]
 dependencies = [
   "channel-py",
+  "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]

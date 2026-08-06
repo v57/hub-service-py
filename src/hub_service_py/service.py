@@ -8,12 +8,15 @@ on disconnect).
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from channel_py.channel import Channel
 from channel_py.client import ConnectOptions, connect_channel
+
+from hub_service_py import keychain
 
 
 class ServiceNotStartedError(RuntimeError):
@@ -77,14 +80,26 @@ class Service:
         service.post("echo", lambda body: body).start()
     """
 
-    def __init__(self, options: ServiceOptions | dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        options: ServiceOptions | dict[str, Any] | None = None,
+        *,
+        sign: Callable[[], str | Awaitable[str]] | None = None,
+    ) -> None:
+        """Create a service.
+
+        options: ServiceOptions (address/name/icon).
+        sign:    optional token factory for hub-pro auth (default: the
+                 keychain ``auth`` file in the cwd, TS parity). The token is
+                 attached as the ``auth`` header on every (re)connect.
+        """
         if isinstance(options, dict):
             options = ServiceOptions(**options)
         opts = options or ServiceOptions()
         self.channel = Channel()
-        self.address: int | str = (
-            opts.address if opts.address is not None else (os.environ.get("HUB") or 1997)
-        )
+        env = os.environ.get("HUB")
+        address = opts.address if opts.address is not None else (int(env) if env and env.isdigit() else env)
+        self.address: int | str = address if address is not None else 1997
         self.apps: list[AppHeader] = []
         self.settings: dict[str, ApiSettings] = {}
         # Every registered handler path (post, stream, app) in registration
@@ -92,6 +107,7 @@ class Service:
         self._paths: set[str] = set()
         self.sender: Any = None  # ClientSender once started
         self.profile: Profile | None = None
+        self.sign = sign if sign is not None else (lambda: keychain.sign())
         if opts.name or opts.icon is not None:
             self.profile = Profile(name=opts.name, icon=opts.icon)
 
@@ -180,9 +196,19 @@ class Service:
         self.sender = connect_channel(
             self.channel,
             self.address,
-            ConnectOptions(on_connect=self._on_connect),
+            ConnectOptions(
+                on_connect=self._on_connect,
+                headers=self._auth_headers,
+            ),
         )
         return self
+
+    async def _auth_headers(self) -> dict[str, str]:
+        """Auth headers for hub-pro: a fresh signed token + protocol version."""
+        token = self.sign()
+        if asyncio.iscoroutine(token) or hasattr(token, "__await__"):
+            token = await token  # type: ignore[assignment]
+        return {"auth": str(token), "v": "0"}
 
     def send(self, path: str, body: Any = None, context: Any = None) -> Any:
         """Call an API through the hub (client side). Await the result.
@@ -207,6 +233,14 @@ class Service:
         return self.sender
 
     async def _on_connect(self, sender: Any) -> None:
+        """Re-announce on every (re)connect.
+
+        Fire-and-forget: the py client reads incoming messages only after the
+        onopen callback returns, so awaiting a send (which waits for the hub's
+        response) inside onopen would deadlock and the service update would
+        never be sent. The enqueue happens synchronously in send(), so
+        scheduling both sends as tasks is safe.
+        """
         try:
             if self.profile is not None:
                 profile: dict[str, Any] = {}
@@ -214,13 +248,21 @@ class Service:
                     profile["name"] = self.profile.name
                 if self.profile.icon is not None:
                     profile["icon"] = self.profile.icon
-                await sender.send("hub/profile/update", profile)
+                asyncio.create_task(_quiet_send(sender, "hub/profile/update", profile))
         except Exception:
             pass
         try:
-            await sender.send("hub/service/update", self.update())
+            asyncio.create_task(_quiet_send(sender, "hub/service/update", self.update()))
         except Exception:
             pass
+
+
+async def _quiet_send(sender: Any, path: str, body: Any) -> None:
+    """Send a request, swallowing errors (connection may drop mid-send)."""
+    try:
+        await sender.send(path, body)
+    except Exception:
+        pass
 
 
 async def _yield_app_interface(app: Any) -> AsyncIterator[Any]:
