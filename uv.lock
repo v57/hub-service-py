@@ -90,7 +90,7 @@ wheels = [
 [[package]]
 name = "channel-py"
 version = "0.1.0"
-source = { directory = "../channel-py" }
+source = { directory = "../../Channel/channel-py" }
 dependencies = [
     { name = "orjson" },
     { name = "uvloop", marker = "sys_platform != 'win32'" },
@@ -184,7 +184,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "channel-py", directory = "../channel-py" },
+    { name = "channel-py", directory = "../../Channel/channel-py" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.1.0" },

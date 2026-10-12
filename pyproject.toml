@@ -22,7 +22,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-channel-py = { path = "../channel-py" }
+channel-py = { path = "../../Channel/channel-py" }
 
 [tool.pytest.ini_options]
 addopts = "-q"

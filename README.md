@@ -14,7 +14,7 @@ AppInterface + element DSL).
 ## Install
 
 ```bash
-uv sync --extra dev   # path dependency on ../channel-py (see [tool.uv.sources])
+uv sync --extra dev   # path dependency on ../../Channel/channel-py (see [tool.uv.sources])
 ```
 
 ## Usage
