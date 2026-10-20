@@ -75,22 +75,23 @@ def test_service_sends_device_header_for_its_key(dirs):
     assert body["device"] == service.device.public_key
 
 
-def test_instance_defaults_to_name(dirs):
-    assert Service(ServiceOptions(address=1, name="Echo")).instance == "Echo"
-
-
 def test_device_mode_off_sends_no_header(dirs):
     service = Service(ServiceOptions(address=1, device=False))
     assert "device" not in asyncio.run(service._auth_headers())
     assert not (dirs / "hub").exists()
 
 
-def test_instance_defaults_to_first_path_segment(dirs):
-    service = Service(ServiceOptions(address=1))
-    assert service.instance == "service"
-    service.post("s3/read", lambda body: body)
-    service.post("echo", lambda body: body)
-    assert service.instance == "s3"
+def test_instance_defaults(dirs, monkeypatch):
+    monkeypatch.delenv("HUB_INSTANCE", raising=False)
+    work = dirs / "s3-local"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    assert Service(ServiceOptions(address=1)).instance == "s3-local"
+    assert Service(ServiceOptions(address=1, name="Echo")).instance == "Echo"
+    monkeypatch.setenv("HUB_INSTANCE", "s3-local/Backup Disk")
+    assert Service(ServiceOptions(address=1, name="Echo")).instance == "s3-local/Backup Disk"
+    assert Service(ServiceOptions(address=1, instance="mine")).instance == "mine"
+    assert Service(ServiceOptions(address=1, instance="é" * 100)).instance == "é" * 64
 
 
 def test_instance_length_checked(dirs):

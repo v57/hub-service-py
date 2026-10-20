@@ -36,8 +36,8 @@ class ServiceOptions:
     hub_key: the hub's key when known up front (an invitation or config);
              otherwise it is learned from hub/info and pinned.
     instance: this service's name on its device, unique per device
-             (``s3-local/Backup Disk``). Default: name, else the first
-             segment of the first registered path, else ``service``.
+             (``s3-local/Backup Disk``). Default: ``HUB_INSTANCE``, else
+             name, else the cwd name, else ``service``.
     device:  True (default) certifies the service with this device's key
              (``~/.hub/device.key`` or ``HUB_DEVICE_KEY``) when it can be
              read or created; False sends no ``device`` header; a Device
@@ -195,7 +195,6 @@ class Service:
         self.target = keychain.pin_address(self.address)
         self._hub_key = opts.hub_key
         self._instance = opts.instance
-        self._first_path: str | None = None
         self.device: Device | None = (
             opts.device if isinstance(opts.device, Device) else Device() if opts.device else None
         )
@@ -253,18 +252,19 @@ class Service:
 
     @property
     def instance(self) -> str:
-        """The instance name sent in the certificate."""
-        if self._instance:
-            return self._instance
-        if self.profile is not None and self.profile.name:
-            return self.profile.name
-        if self._first_path:
-            return self._first_path.split("/")[0]
-        return "service"
+        """The instance name sent in the certificate: the option, else
+        ``HUB_INSTANCE`` (the launcher sets it), else the name, else the cwd
+        name, else ``service``; at most 128 UTF-8 bytes."""
+        name = (
+            self._instance
+            or os.environ.get("HUB_INSTANCE")
+            or (self.profile.name if self.profile is not None else None)
+            or os.path.basename(os.getcwd())
+            or "service"
+        )
+        return name.encode()[:128].decode(errors="ignore") or "service"
 
     def _add_path(self, path: str, settings: ApiSettings | None) -> None:
-        if self._first_path is None:
-            self._first_path = path
         if settings is not None:
             if settings.permissions is not None and not settings.permissions.group:
                 settings.permissions.group = path.split("/")[0]
