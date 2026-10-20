@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from channel_py.channel import Channel
@@ -86,6 +86,79 @@ class ApiSettings:
     limit: int | None = None
 
 
+@dataclass
+class CallerDevice:
+    """The caller's device, when its connection is device-attached."""
+
+    id: str
+    name: str
+
+
+@dataclass
+class Caller:
+    """Who is calling, as the hub saw it (``context.hub.caller``).
+
+    key:     the caller's SPKI; None for anonymous callers.
+    device:  the caller's device; None for clients without one.
+    groups:  every group the key or its device belongs to.
+    owner:   whether the caller is in the owners group.
+    via:     the merged hub's key, for calls that came through a merged hub.
+    claimed: the merged hub's own caller claim (unverified).
+    """
+
+    key: str | None = None
+    device: CallerDevice | None = None
+    groups: list[str] = field(default_factory=list)
+    owner: bool = False
+    via: str | None = None
+    claimed: "Caller | None" = None
+
+    @staticmethod
+    def parse(value: Any) -> "Caller | None":
+        if not isinstance(value, dict):
+            return None
+        device = value.get("device")
+        groups = value.get("groups")
+        return Caller(
+            key=value.get("key") if isinstance(value.get("key"), str) else None,
+            device=CallerDevice(id=str(device.get("id", "")), name=str(device.get("name", "")))
+            if isinstance(device, dict)
+            else None,
+            groups=[g for g in groups if isinstance(g, str)] if isinstance(groups, list) else [],
+            owner=value.get("owner") is True,
+            via=value.get("via") if isinstance(value.get("via"), str) else None,
+            claimed=Caller.parse(value.get("claimed")),
+        )
+
+
+@dataclass
+class Request:
+    """What a two-argument handler gets next to the body.
+
+    caller:  who is calling (None when the hub sent no caller, e.g. hub-lite).
+    hub_key: the forwarding hub's key, from ``context.hub.hubKey``.
+    context: the full request context.
+    path:    the called path.
+    """
+
+    caller: Caller | None
+    hub_key: str | None
+    context: dict[str, Any]
+    path: str
+
+    @staticmethod
+    def from_context(ctx: Any) -> "Request":
+        context = ctx.context if isinstance(ctx.context, dict) else {}
+        hub = context.get("hub") if isinstance(context.get("hub"), dict) else {}
+        hub_key = hub.get("hubKey")
+        return Request(
+            caller=Caller.parse(hub.get("caller")),
+            hub_key=hub_key if isinstance(hub_key, str) else None,
+            context=context,
+            path=ctx.path,
+        )
+
+
 class Service:
     """Registers API endpoints on a hub and serves calls forwarded by it.
 
@@ -147,10 +220,11 @@ class Service:
         """Register a request/response API endpoint.
 
         handler receives the request body (may be sync or async) and returns
-        the response body.
+        the response body. A handler that takes a second argument also gets
+        the Request (``request.caller``: who is calling).
         """
         self._add_path(path, settings)
-        self.channel.post(path, lambda ctx: handler(ctx.body))
+        self.channel.post(path, _with_request(handler))
         return self
 
     def stream(
@@ -162,10 +236,11 @@ class Service:
         """Register a streaming API endpoint.
 
         handler receives the request body and returns an async iterator /
-        async generator / generator of values to stream back.
+        async generator / generator of values to stream back. A handler that
+        takes a second argument also gets the Request (as in post).
         """
         self._add_path(path, settings)
-        self.channel.stream(path, lambda ctx: handler(ctx.body))
+        self.channel.stream(path, _with_request(handler))
         return self
 
     def app(self, app: Any) -> "Service":
@@ -345,6 +420,27 @@ class Service:
         ws = self.sender.ws.ws if self.sender is not None else None
         if ws is not None:
             await ws.close()
+
+
+def _with_request(handler: Callable[..., Any]) -> Callable[[Any], Any]:
+    """Adapt a ``(body)`` or ``(body, request)`` handler to a channel one."""
+    if _positional_count(handler) >= 2:
+        return lambda ctx: handler(ctx.body, Request.from_context(ctx))
+    return lambda ctx: handler(ctx.body)
+
+
+def _positional_count(function: Callable[..., Any]) -> int:
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return 1
+    count = 0
+    for p in parameters:
+        if p.kind == p.VAR_POSITIONAL:
+            return 2
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            count += 1
+    return count
 
 
 def _takes_argument(function: Callable[..., Any]) -> bool:

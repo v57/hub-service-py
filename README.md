@@ -66,6 +66,11 @@ response = await service.send("echo/upper", "hello")  # "HELLO"
 - `post(path, handler(body) -> resp, settings?) -> Service` — handler may be
   sync or async
 - `stream(path, handler(body) -> async iterator of values, settings?) -> Service`
+- Either handler may take a second argument, a `Request`: `request.caller`
+  (`Caller`: `key`, `device` (`id`, `name`), `groups`, `owner`, `via`,
+  `claimed`; None when the hub sends none), `request.hub_key`,
+  `request.context`, `request.path`. The hub fills `context.hub`, so a
+  service can trust it.
 - `app(App) -> Service` — appends the header to the hub apps list and serves
   the AppInterface as a stream at `header.path`
 - `send(path, body?, context?)` — client call through the hub (raises
