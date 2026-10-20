@@ -1,14 +1,16 @@
 """Core hub-service types and the Service class.
 
-Lite port of hub-service (TS reference): no auth, no keychain, no crypto.
-The wire contract matches the TS/Go reference — hub/profile/update and
-hub/service/update are re-sent on every (re)connect (the hub drops services
-on disconnect).
+Port of hub-service (TS reference). The wire contract matches the TS/Go
+reference — hub/profile/update and hub/service/update are re-sent on every
+(re)connect (the hub drops services on disconnect). Auth follows
+Docs/Devices/protocol.md: v0 tokens until the hub key is pinned from
+hub/info, hub-bound v1 tokens after that.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -30,11 +32,14 @@ class ServiceOptions:
     address: a port (int) or a ws:// URL (string). Default: 1997 or $HUB.
     name:    profile name shown in the hub.
     icon:    profile icon: a string or {"symbol": ..., "text": ...}.
+    hub_key: the hub's key when known up front (an invitation or config);
+             otherwise it is learned from hub/info and pinned.
     """
 
     address: int | str | None = None
     name: str | None = None
     icon: Any = None
+    hub_key: str | None = None
 
 
 @dataclass
@@ -84,14 +89,17 @@ class Service:
         self,
         options: ServiceOptions | dict[str, Any] | None = None,
         *,
-        sign: Callable[[], str | Awaitable[str]] | None = None,
+        sign: Callable[..., str | Awaitable[str]] | None = None,
     ) -> None:
         """Create a service.
 
-        options: ServiceOptions (address/name/icon).
+        options: ServiceOptions (address/name/icon/hub_key).
         sign:    optional token factory for hub-pro auth (default: the
                  keychain ``auth`` file in the cwd, TS parity). The token is
-                 attached as the ``auth`` header on every (re)connect.
+                 attached as the ``auth`` header on every (re)connect. A
+                 factory that takes one argument gets the pinned hub key (or
+                 None) and must sign v1 when it is set; one without arguments
+                 always connects with v0.
         """
         if isinstance(options, dict):
             options = ServiceOptions(**options)
@@ -100,6 +108,9 @@ class Service:
         env = os.environ.get("HUB")
         address = opts.address if opts.address is not None else (int(env) if env and env.isdigit() else env)
         self.address: int | str = address if address is not None else 1997
+        # The URL the client dials; also the hubs.json pin key.
+        self.target = self.address if isinstance(self.address, str) else f"ws://127.0.0.1:{self.address}"
+        self._hub_key = opts.hub_key
         self.apps: list[AppHeader] = []
         self.settings: dict[str, ApiSettings] = {}
         # Every registered handler path (post, stream, app) in registration
@@ -107,7 +118,8 @@ class Service:
         self._paths: set[str] = set()
         self.sender: Any = None  # ClientSender once started
         self.profile: Profile | None = None
-        self.sign = sign if sign is not None else (lambda: keychain.sign())
+        self.sign = sign if sign is not None else (lambda hub_key=None: keychain.sign(hub_key=hub_key))
+        self._sign_takes_hub_key = _takes_argument(self.sign)
         if opts.name or opts.icon is not None:
             self.profile = Profile(name=opts.name, icon=opts.icon)
 
@@ -203,12 +215,37 @@ class Service:
         )
         return self
 
+    @property
+    def pins(self) -> keychain.HubPins:
+        """Pinned hub keys: ``hubs.json`` beside the service key file."""
+        return keychain.HubPins(keychain.key_path().parent / "hubs.json")
+
+    @property
+    def hub_key(self) -> str | None:
+        """The hub key this service signs for: supplied, else pinned."""
+        return self._hub_key or self.pins.get(self.target)
+
+    def forget_hub_key(self) -> None:
+        """Clear the pinned hub key; the next connect learns it again (v0)."""
+        self._hub_key = None
+        self.pins.forget(self.target)
+
+    @property
+    def last_error(self) -> str | None:
+        """Why the last connection attempt failed, if it did. A refused v1
+        connect (``invalid signature``: the hub key changed or a different
+        server answers) shows up here; the SDK never falls back to v0."""
+        if self.sender is None:
+            return None
+        return self.sender.ws.close_error
+
     async def _auth_headers(self) -> dict[str, str]:
         """Auth headers for hub-pro: a fresh signed token + protocol version."""
-        token = self.sign()
+        hub_key = self.hub_key if self._sign_takes_hub_key else None
+        token = self.sign(hub_key) if self._sign_takes_hub_key else self.sign()
         if asyncio.iscoroutine(token) or hasattr(token, "__await__"):
             token = await token  # type: ignore[assignment]
-        return {"auth": str(token), "v": "0"}
+        return {"auth": str(token), "v": "1" if hub_key else "0"}
 
     def send(self, path: str, body: Any = None, context: Any = None) -> Any:
         """Call an API through the hub (client side). Await the result.
@@ -255,6 +292,34 @@ class Service:
             asyncio.create_task(_quiet_send(sender, "hub/service/update", self.update()))
         except Exception:
             pass
+        if self.hub_key is None and self._sign_takes_hub_key:
+            asyncio.create_task(self._learn_hub_key(sender))
+
+    async def _learn_hub_key(self, sender: Any) -> None:
+        """Pin the hub key from hub/info, then reconnect with v1 at once.
+        hub-lite doesn't answer hub/info, so the service stays on v0 there."""
+        try:
+            info = await asyncio.wait_for(sender.send("hub/info"), 10)
+        except Exception:
+            return
+        key = info.get("key") if isinstance(info, dict) else None
+        if not isinstance(key, str) or not key or self.hub_key is not None:
+            return
+        self.pins.set(self.target, key)
+        ws = self.sender.ws.ws if self.sender is not None else None
+        if ws is not None:
+            await ws.close()
+
+
+def _takes_argument(function: Callable[..., Any]) -> bool:
+    """Whether a sign factory accepts the hub key as its first argument."""
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL) for p in parameters
+    )
 
 
 async def _quiet_send(sender: Any, path: str, body: Any) -> None:
