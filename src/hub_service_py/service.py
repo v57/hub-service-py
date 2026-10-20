@@ -193,6 +193,8 @@ class Service:
         # The hubs.json pin key for this hub.
         self.target = keychain.pin_address(self.address)
         self._hub_key = opts.hub_key
+        self._pinned: str | None = None
+        self._pin_loaded = False
         self._instance = opts.instance
         self.device: Device | None = (
             opts.device if isinstance(opts.device, Device) else Device() if opts.device else None
@@ -330,12 +332,19 @@ class Service:
 
     @property
     def hub_key(self) -> str | None:
-        """The hub key this service signs for: supplied, else pinned."""
-        return self._hub_key or self.pins.get(self.target)
+        """The hub key this service signs for: supplied, else pinned. The pin
+        is read from hubs.json at each connect and kept in memory."""
+        if self._hub_key:
+            return self._hub_key
+        if not self._pin_loaded:
+            self._pinned = self.pins.get(self.target)
+            self._pin_loaded = True
+        return self._pinned
 
     def forget_hub_key(self) -> None:
         """Clear the pinned hub key; the next connect learns it again (v0)."""
         self._hub_key = None
+        self._pinned = None
         self.pins.forget(self.target)
 
     @property
@@ -349,6 +358,7 @@ class Service:
 
     async def _auth_headers(self) -> dict[str, str]:
         """Auth headers for hub-pro: a fresh signed token + protocol version."""
+        self._pin_loaded = False  # pick up a pin another process wrote
         hub_key = self.hub_key if self._sign_takes_hub_key else None
         token = self.sign(hub_key) if self._sign_takes_hub_key else self.sign()
         if asyncio.iscoroutine(token) or hasattr(token, "__await__"):
@@ -422,6 +432,7 @@ class Service:
         if not isinstance(key, str) or not key or self.hub_key is not None:
             return
         self.pins.set(self.target, key)
+        self._pinned, self._pin_loaded = key, True
         ws = self.sender.ws.ws if self.sender is not None else None
         if ws is not None:
             await ws.close()
