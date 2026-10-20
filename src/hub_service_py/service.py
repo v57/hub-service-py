@@ -108,8 +108,8 @@ class Service:
         env = os.environ.get("HUB")
         address = opts.address if opts.address is not None else (int(env) if env and env.isdigit() else env)
         self.address: int | str = address if address is not None else 1997
-        # The URL the client dials; also the hubs.json pin key.
-        self.target = self.address if isinstance(self.address, str) else f"ws://127.0.0.1:{self.address}"
+        # The hubs.json pin key for this hub.
+        self.target = keychain.pin_address(self.address)
         self._hub_key = opts.hub_key
         self.apps: list[AppHeader] = []
         self.settings: dict[str, ApiSettings] = {}

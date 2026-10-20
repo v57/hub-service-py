@@ -36,6 +36,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -154,6 +155,23 @@ def sign(expires: int = 60, hub_key: str | None = None) -> str:
     with ``v: 1``). Without it the token is v0 (the expiry alone).
     """
     return token(_load_or_generate(), int(time.time()) + expires, hub_key)
+
+
+def pin_address(address: int | str) -> str:
+    """The hubs.json key for a hub address: a bare port is
+    ``ws://localhost:<port>``; a URL keeps its form with the scheme and host
+    lowercased and no trailing slash (channel TS normalization)."""
+    if isinstance(address, int) or str(address).isdigit():
+        return f"ws://localhost:{address}"
+    parts = urlsplit(str(address))
+    netloc = parts.netloc
+    if "@" in netloc:
+        user, host = netloc.rsplit("@", 1)
+        netloc = f"{user}@{host.lower()}"
+    else:
+        netloc = netloc.lower()
+    url = urlunsplit((parts.scheme.lower(), netloc, parts.path, parts.query, parts.fragment))
+    return url.rstrip("/")
 
 
 class HubPins:

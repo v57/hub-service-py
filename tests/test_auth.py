@@ -123,3 +123,11 @@ async def test_hub_lite_keeps_v0(key_dir):
     finally:
         service.sender.stop()
         await hub.server.stop_async()
+
+
+def test_pin_address_normalization():
+    assert keychain.pin_address(1997) == "ws://localhost:1997"
+    assert keychain.pin_address("1997") == "ws://localhost:1997"
+    assert keychain.pin_address("WS://Hub.Example.COM:2000/") == "ws://hub.example.com:2000"
+    assert keychain.pin_address("wss://hub.example.com/Path/") == "wss://hub.example.com/Path"
+    assert Service(ServiceOptions(address=1997)).target == "ws://localhost:1997"
