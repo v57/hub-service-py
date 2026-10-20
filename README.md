@@ -68,9 +68,9 @@ response = await service.send("echo/upper", "hello")  # "HELLO"
 - `stream(path, handler(body) -> async iterator of values, settings?) -> Service`
 - Either handler may take a second argument, a `Request`: `request.caller`
   (`Caller`: `key`, `device` (`id`, `name`), `groups`, `owner`, `via`,
-  `claimed`; None when the hub sends none), `request.hub_key`,
-  `request.context`, `request.path`. The hub fills `context.hub`, so a
-  service can trust it.
+  `claimed`), `request.context` (without `hub`), `request.path`. The caller
+  is None unless `context.hub.hubKey` is the pinned hub key: a hub that
+  predates caller identity may pass a client's `context.hub` through.
 - `app(App) -> Service` — appends the header to the hub apps list and serves
   the AppInterface as a stream at `header.path`
 - `send(path, body?, context?)` — client call through the hub (raises

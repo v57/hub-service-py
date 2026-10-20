@@ -42,7 +42,9 @@ async def test_handlers_get_the_caller(tmp_path, monkeypatch):
             results["post"] = await sender.send("whoami", "hi", CONTEXT)
             results["plain"] = await sender.send("echo", "hi", CONTEXT)
             results["stream"] = [v async for v in sender.values("whoami/values", None, CONTEXT)]
-            results["anonymous"] = await sender.send("whoami", "hi", {})
+            results["anonymous"] = await sender.send("whoami", "hi", {"service": "x"})
+            spoofed = {"hub": {**CONTEXT["hub"], "hubKey": "OTHER"}}
+            results["spoofed"] = await sender.send("whoami", "hi", spoofed)
         except Exception as error:
             results["error"] = repr(error)
         done.set()
@@ -54,10 +56,10 @@ async def test_handlers_get_the_caller(tmp_path, monkeypatch):
     async def whoami_values(body, request):
         yield request.caller.device.name
 
-    service = Service(ServiceOptions(address=server.port))
+    service = Service(ServiceOptions(address=server.port, hub_key=CONTEXT["hub"]["hubKey"]))
     def whoami(body, request):
         caller = request.caller or Caller()
-        return [body, caller.key, caller.owner, request.hub_key]
+        return [body, caller.key, caller.owner, sorted(request.context)]
 
     service.post("whoami", whoami)
     service.post("echo", lambda body: body)
@@ -69,7 +71,9 @@ async def test_handlers_get_the_caller(tmp_path, monkeypatch):
         service.sender.stop()
         await server.stop_async()
     assert "error" not in results, results
-    assert results["post"] == ["hi", CONTEXT["hub"]["caller"]["key"], True, CONTEXT["hub"]["hubKey"]]
+    assert results["post"] == ["hi", CONTEXT["hub"]["caller"]["key"], True, []]
     assert results["plain"] == "hi"
     assert results["stream"] == ["Mac Studio"]
-    assert results["anonymous"] == ["hi", None, False, None]
+    assert results["anonymous"] == ["hi", None, False, ["service"]]
+    # A caller is trusted only from the pinned hub.
+    assert results["spoofed"] == ["hi", None, False, []]

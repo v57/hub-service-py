@@ -135,25 +135,24 @@ class Caller:
 class Request:
     """What a two-argument handler gets next to the body.
 
-    caller:  who is calling (None when the hub sent no caller, e.g. hub-lite).
-    hub_key: the forwarding hub's key, from ``context.hub.hubKey``.
-    context: the full request context.
+    caller:  who is calling; None unless the hub that forwarded the request
+             is the pinned hub (a hub that predates caller identity may pass
+             a client's context.hub through unchanged).
+    context: the request context without ``hub``.
     path:    the called path.
     """
 
     caller: Caller | None
-    hub_key: str | None
     context: dict[str, Any]
     path: str
 
     @staticmethod
-    def from_context(ctx: Any) -> "Request":
-        context = ctx.context if isinstance(ctx.context, dict) else {}
-        hub = context.get("hub") if isinstance(context.get("hub"), dict) else {}
-        hub_key = hub.get("hubKey")
+    def from_context(ctx: Any, hub_key: str | None) -> "Request":
+        context = dict(ctx.context) if isinstance(ctx.context, dict) else {}
+        hub = context.pop("hub", None)
+        trusted = isinstance(hub, dict) and hub_key is not None and hub.get("hubKey") == hub_key
         return Request(
-            caller=Caller.parse(hub.get("caller")),
-            hub_key=hub_key if isinstance(hub_key, str) else None,
+            caller=Caller.parse(hub.get("caller")) if trusted else None,
             context=context,
             path=ctx.path,
         )
@@ -223,7 +222,7 @@ class Service:
         the Request (``request.caller``: who is calling).
         """
         self._add_path(path, settings)
-        self.channel.post(path, _with_request(handler))
+        self.channel.post(path, self._with_request(handler))
         return self
 
     def stream(
@@ -239,7 +238,7 @@ class Service:
         takes a second argument also gets the Request (as in post).
         """
         self._add_path(path, settings)
-        self.channel.stream(path, _with_request(handler))
+        self.channel.stream(path, self._with_request(handler))
         return self
 
     def app(self, app: Any) -> "Service":
@@ -263,6 +262,12 @@ class Service:
             or "service"
         )
         return name.encode()[:128].decode(errors="ignore") or "service"
+
+    def _with_request(self, handler: Callable[..., Any]) -> Callable[[Any], Any]:
+        """Adapt a ``(body)`` or ``(body, request)`` handler to a channel one."""
+        if _positional_count(handler) >= 2:
+            return lambda ctx: handler(ctx.body, Request.from_context(ctx, self.hub_key))
+        return lambda ctx: handler(ctx.body)
 
     def _add_path(self, path: str, settings: ApiSettings | None) -> None:
         if settings is not None:
@@ -420,13 +425,6 @@ class Service:
         ws = self.sender.ws.ws if self.sender is not None else None
         if ws is not None:
             await ws.close()
-
-
-def _with_request(handler: Callable[..., Any]) -> Callable[[Any], Any]:
-    """Adapt a ``(body)`` or ``(body, request)`` handler to a channel one."""
-    if _positional_count(handler) >= 2:
-        return lambda ctx: handler(ctx.body, Request.from_context(ctx))
-    return lambda ctx: handler(ctx.body)
 
 
 def _positional_count(function: Callable[..., Any]) -> int:
