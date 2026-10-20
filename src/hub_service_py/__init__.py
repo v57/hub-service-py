@@ -18,6 +18,7 @@ from .app import (
     vstack,
     zstack,
 )
+from .device import Device
 from .service import (
     ApiSettings,
     AppHeader,
@@ -35,6 +36,7 @@ __all__ = [
     "ApiSettings",
     "App",
     "AppHeader",
+    "Device",
     "Profile",
     "Service",
     "ServiceNotStartedError",

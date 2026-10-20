@@ -19,6 +19,7 @@ from channel_py.channel import Channel
 from channel_py.client import ConnectOptions, connect_channel
 
 from hub_service_py import keychain
+from hub_service_py.device import Device
 
 
 class ServiceNotStartedError(RuntimeError):
@@ -34,12 +35,21 @@ class ServiceOptions:
     icon:    profile icon: a string or {"symbol": ..., "text": ...}.
     hub_key: the hub's key when known up front (an invitation or config);
              otherwise it is learned from hub/info and pinned.
+    instance: this service's name on its device, unique per device
+             (``s3-local/Backup Disk``). Default: name, else the first
+             segment of the first registered path, else ``service``.
+    device:  True (default) certifies the service with this device's key
+             (``~/.hub/device.key`` or ``HUB_DEVICE_KEY``) when it can be
+             read or created; False sends no ``device`` header; a Device
+             uses that device (and its key or key store).
     """
 
     address: int | str | None = None
     name: str | None = None
     icon: Any = None
     hub_key: str | None = None
+    instance: str | None = None
+    device: "bool | Device" = True
 
 
 @dataclass
@@ -111,6 +121,11 @@ class Service:
         # The hubs.json pin key for this hub.
         self.target = keychain.pin_address(self.address)
         self._hub_key = opts.hub_key
+        self._instance = opts.instance
+        self._first_path: str | None = None
+        self.device: Device | None = (
+            opts.device if isinstance(opts.device, Device) else Device() if opts.device else None
+        )
         self.apps: list[AppHeader] = []
         self.settings: dict[str, ApiSettings] = {}
         # Every registered handler path (post, stream, app) in registration
@@ -161,7 +176,20 @@ class Service:
         self.channel.stream(app.header.path, lambda ctx: _yield_app_interface(app))
         return self
 
+    @property
+    def instance(self) -> str:
+        """The instance name sent in the certificate."""
+        if self._instance:
+            return self._instance
+        if self.profile is not None and self.profile.name:
+            return self.profile.name
+        if self._first_path:
+            return self._first_path.split("/")[0]
+        return "service"
+
     def _add_path(self, path: str, settings: ApiSettings | None) -> None:
+        if self._first_path is None:
+            self._first_path = path
         if settings is not None:
             if settings.permissions is not None and not settings.permissions.group:
                 settings.permissions.group = path.split("/")[0]
@@ -245,7 +273,15 @@ class Service:
         token = self.sign(hub_key) if self._sign_takes_hub_key else self.sign()
         if asyncio.iscoroutine(token) or hasattr(token, "__await__"):
             token = await token  # type: ignore[assignment]
-        return {"auth": str(token), "v": "1" if hub_key else "0"}
+        headers = {"auth": str(token), "v": "1" if hub_key else "0"}
+        if self.device is not None:
+            # The certificate names the key in the token, whoever signed it.
+            service_key = headers["auth"].split(".")[1]
+            try:
+                headers["device"] = self.device.certificate(service_key, self.instance)
+            except (OSError, ValueError):
+                pass  # no readable or creatable device key: a plain key connection
+        return headers
 
     def send(self, path: str, body: Any = None, context: Any = None) -> Any:
         """Call an API through the hub (client side). Await the result.
