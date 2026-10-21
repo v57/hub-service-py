@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -20,6 +21,7 @@ from channel_py.client import ConnectOptions, connect_channel
 
 from hub_service_py import keychain
 from hub_service_py.device import Device
+from hub_service_py.network import NetworkPublisher
 
 
 class ServiceNotStartedError(RuntimeError):
@@ -172,6 +174,7 @@ class Service:
         options: ServiceOptions | dict[str, Any] | None = None,
         *,
         sign: Callable[..., str | Awaitable[str]] | None = None,
+        sign_challenge: Callable[[str], str | Awaitable[str]] | None = None,
     ) -> None:
         """Create a service.
 
@@ -182,6 +185,8 @@ class Service:
                  factory that takes one argument gets the pinned hub key (or
                  None) and must sign v1 when it is set; one without arguments
                  always connects with v0.
+        sign_challenge: signs Hub Network agent challenges with the service
+                 key (default: the keychain ``auth`` file).
         """
         if isinstance(options, dict):
             options = ServiceOptions(**options)
@@ -208,6 +213,10 @@ class Service:
         self.profile: Profile | None = None
         self.sign = sign if sign is not None else (lambda hub_key=None: keychain.sign(hub_key=hub_key))
         self._sign_takes_hub_key = _takes_argument(self.sign)
+        self.sign_challenge = sign_challenge if sign_challenge is not None else keychain.sign_data
+        self._service_key: str | None = None
+        # Hub Network shares; the agent socket is network.agent_socket.
+        self.network = NetworkPublisher()
         if opts.name or opts.icon is not None:
             self.profile = Profile(name=opts.name, icon=opts.icon)
 
@@ -364,6 +373,7 @@ class Service:
         if asyncio.iscoroutine(token) or hasattr(token, "__await__"):
             token = await token  # type: ignore[assignment]
         headers = {"auth": str(token), "v": "1" if hub_key else "0"}
+        self._service_key = headers["auth"].split(".")[1]
         if self.device is not None:
             # The certificate names the key in the token, whoever signed it.
             service_key = headers["auth"].split(".")[1]
@@ -420,6 +430,60 @@ class Service:
             pass
         if self.hub_key is None and self._sign_takes_hub_key:
             asyncio.create_task(self._learn_hub_key(sender))
+        if self.network.has_shares:
+            asyncio.create_task(self._republish(sender))
+
+    @property
+    def service_key(self) -> str:
+        """The key this service connects with (the key in its auth token)."""
+        return self._service_key or keychain.public_key()
+
+    async def _republish(self, sender: Any) -> None:
+        try:
+            await self.network.republish_all(self.service_key, self.sign_challenge, sender)
+        except Exception as error:
+            print(f"Failed to republish network shares: {error}", file=sys.stderr)
+
+    def share(self, name: str, protocol: str, host: str, port: int, policy: dict[str, Any] | None = None) -> "Service":
+        """Declare a Hub Network share before start(); the declared set is
+        published on connect and after every reconnect. Default policy:
+        private."""
+        self.network.declare_share(_share(name, protocol, host, port, policy))
+        return self
+
+    async def publish_share(
+        self, name: str, protocol: str, host: str, port: int, policy: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Publish a local TCP/UDP port through Hub Network; returns every
+        publication ({resourceId, authority, overlayAddress, port, ...})."""
+        return await self.network.publish_share(
+            _share(name, protocol, host, port, policy), self.service_key, self.sign_challenge, self._sender_or_error()
+        )
+
+    async def update_share(
+        self, name: str, *, policy: dict[str, Any] | None = None, port: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Change a share's policy or target port and republish it."""
+        current = next((s for s in self.network.declared_shares if s["name"] == name), None)
+        if current is None:
+            raise KeyError(f"Share '{name}' not found")
+        updated = dict(current)
+        if policy is not None:
+            updated["policy"] = policy
+        if port is not None:
+            updated["target"] = {**current["target"], "port": port}
+        return await self.network.publish_share(updated, self.service_key, self.sign_challenge, self._sender_or_error())
+
+    async def remove_share(self, name: str) -> list[dict[str, Any]]:
+        """Remove a share from Hub Network."""
+        return await self.network.remove_share(name, self.service_key, self.sign_challenge, self._sender_or_error())
+
+    @property
+    def share_publications(self) -> list[dict[str, Any]]:
+        return self.network.publications
+
+    def share_publication(self, name: str) -> dict[str, Any] | None:
+        return self.network.publication(name)
 
     async def _learn_hub_key(self, sender: Any) -> None:
         """Pin the hub key from hub/info, then reconnect with v1 at once.
@@ -436,6 +500,15 @@ class Service:
         ws = self.sender.ws.ws if self.sender is not None else None
         if ws is not None:
             await ws.close()
+
+
+def _share(name: str, protocol: str, host: str, port: int, policy: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "name": name,
+        "protocol": protocol,
+        "target": {"host": host, "port": port},
+        "policy": policy if policy is not None else {"mode": "private"},
+    }
 
 
 def _positional_count(function: Callable[..., Any]) -> int:

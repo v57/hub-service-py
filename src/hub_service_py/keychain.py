@@ -141,6 +141,12 @@ def public_key() -> str:
     return spki(_load_or_generate())
 
 
+def sign_data(data: str) -> str:
+    """The base64 signature of ``data`` with the service key (agent
+    challenges for Hub Network shares)."""
+    return base64.b64encode(_load_or_generate().sign(data.encode())).decode()
+
+
 def token(key: Ed25519PrivateKey, expiry: int, hub_key: str | None = None) -> str:
     """An auth token for an exact expiry; v1 (hub-bound) when hub_key is set."""
     data = f"hub1:{hub_key}:{expiry}" if hub_key else f"{expiry}"
