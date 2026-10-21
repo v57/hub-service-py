@@ -1,6 +1,6 @@
 """ed25519 keychain: load-or-generate the ``auth`` key file and sign tokens.
 
-Hub-pro auth parity with the TS reference (hub-service/keychain.ts):
+hub-server auth parity with the TS reference (hub-service/keychain.ts):
 
 - The key file (``auth`` in the working directory, matching the TS keychain)
   is the base64 encoding of the 48-byte PKCS8 DER private key followed by
@@ -9,7 +9,7 @@ Hub-pro auth parity with the TS reference (hub-service/keychain.ts):
     pub     = base64 of the 44-byte SPKI public key (bytes 48..92 of the file)
     sig     = base64 ed25519 signature over the signed data
     expiry  = DECIMAL epoch-seconds string of now + 60 (protocol default;
-              hub-pro rejects it once expired or over 5 minutes ahead)
+              hub-server rejects it once expired or over 5 minutes ahead)
 - The signed data depends on the ``v`` header (Docs/Devices/protocol.md):
     v: 0    the expiry string alone
     v: 1    ``hub1:<hub key>:<expiry>``, so the token only works on the hub

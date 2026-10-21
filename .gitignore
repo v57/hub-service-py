@@ -8,7 +8,7 @@ build/
 .coverage
 htmlcov/
 
-# hub-pro ed25519 keychain (never commit private keys)
+# hub-server ed25519 keychain (never commit private keys)
 /auth
 CLAUDE.md
 /.claude

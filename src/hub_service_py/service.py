@@ -179,7 +179,7 @@ class Service:
         """Create a service.
 
         options: ServiceOptions (address/name/icon/hub_key).
-        sign:    optional token factory for hub-pro auth (default: the
+        sign:    optional token factory for hub-server auth (default: the
                  keychain ``auth`` file in the cwd, TS parity). The token is
                  attached as the ``auth`` header on every (re)connect. A
                  factory that takes one argument gets the pinned hub key (or
@@ -366,7 +366,7 @@ class Service:
         return self.sender.ws.close_error
 
     async def _auth_headers(self) -> dict[str, str]:
-        """Auth headers for hub-pro: a fresh signed token + protocol version."""
+        """Auth headers for hub-server: a fresh signed token + protocol version."""
         self._pin_loaded = False  # pick up a pin another process wrote
         hub_key = self.hub_key if self._sign_takes_hub_key else None
         token = self.sign(hub_key) if self._sign_takes_hub_key else self.sign()
