@@ -134,7 +134,7 @@ async def test_declared_shares_publish_on_connect_and_update(setup):
     service.start()
     try:
         for _ in range(100):
-            if replaced:
+            if service.share_publication("s3") is not None:
                 break
             await asyncio.sleep(0.02)
         assert len(replaced) == 1
