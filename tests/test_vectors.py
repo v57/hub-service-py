@@ -23,7 +23,8 @@ def test_key_files_and_public_keys():
 
 def test_device_id_and_safety_code():
     assert device_id(KEYS["device"]["publicKey"]) == KEYS["device"]["deviceId"]
-    assert safety_code(KEYS["device"]["publicKey"]) == KEYS["device"]["safetyCode"]
+    for case in VECTORS["safetyCode"]["cases"]:
+        assert safety_code(case["hubKey"], case["deviceKey"], case["codeValue"]) == case["code"]
 
 
 def test_auth_tokens():

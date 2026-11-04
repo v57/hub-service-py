@@ -50,9 +50,13 @@ def device_id(public_key: str) -> str:
     return hashlib.sha256(base64.b64decode(public_key)).hexdigest()[:32]
 
 
-def safety_code(public_key: str) -> str:
-    """The code shown on both sides when approving a device: ``"ddd ddd"``."""
-    digest = hashlib.sha256(base64.b64decode(public_key)).hexdigest()
+def safety_code(hub_key: str, public_key: str, code_value: str) -> str:
+    """The code shown on both sides when approving a device: ``"ddd ddd"``.
+
+    ``hub_key`` is the key this side pinned, ``code_value`` what the hub picked
+    after it had the device's key (``hub/device/request``).
+    """
+    digest = hashlib.sha256(f"hubcode1:{hub_key}:{public_key}:{code_value}".encode()).hexdigest()
     n = int(digest[:8], 16) % 1_000_000
     return f"{n // 1000:03d} {n % 1000:03d}"
 
@@ -178,9 +182,8 @@ class Device:
     def id(self) -> str:
         return device_id(self.public_key)
 
-    @property
-    def safety_code(self) -> str:
-        return safety_code(self.public_key)
+    def safety_code(self, hub_key: str, code_value: str) -> str:
+        return safety_code(hub_key, self.public_key, code_value)
 
     def certificate(self, service: str, instance: str, now: int | None = None) -> str:
         """The certificate for a service key, renewed with < 24 h left."""
