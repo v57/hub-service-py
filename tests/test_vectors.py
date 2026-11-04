@@ -28,8 +28,7 @@ def test_device_id_and_safety_code():
 
 def test_auth_tokens():
     auth = VECTORS["auth"]
-    assert keychain.token(key("service"), auth["expiry"]) == auth["v0"]["header"]
-    assert keychain.token(key("service"), auth["expiry"], KEYS["hub"]["publicKey"]) == auth["v1"]["header"]
+    assert keychain.token(key("service"), auth["expiry"], KEYS["hub"]["publicKey"], auth["nonce"]) == auth["v1"]["header"]
 
 
 def test_certificates():

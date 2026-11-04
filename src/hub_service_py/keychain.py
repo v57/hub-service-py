@@ -5,26 +5,24 @@ hub-server auth parity with the TS reference (hub-service/keychain.ts):
 - The key file (``auth`` in the working directory, matching the TS keychain)
   is the base64 encoding of the 48-byte PKCS8 DER private key followed by
   the 44-byte SPKI DER public key (92 bytes total, 124 base64 chars).
-- A signed token has the shape ``key.<pub>.<sig>.<expiry>`` where:
+- A signed token has the shape ``key.<pub>.<sig>.<expiry>.<nonce>`` where:
     pub     = base64 of the 44-byte SPKI public key (bytes 48..92 of the file)
-    sig     = base64 ed25519 signature over the signed data
-    expiry  = DECIMAL epoch-seconds string of now + 60 (protocol default;
-              hub-server rejects it once expired or over 5 minutes ahead)
-- The signed data depends on the ``v`` header (Docs/Devices/protocol.md):
-    v: 0    the expiry string alone
-    v: 1    ``hub1:<hub key>:<expiry>``, so the token only works on the hub
-            whose key it names
+    sig     = base64 ed25519 signature of ``hub1:<hub key>:<nonce>:<expiry>``
+    expiry  = DECIMAL epoch-seconds string of now + 30 (protocol default;
+              hub-server rejects it once expired or over a minute ahead)
+    nonce   = the challenge the hub answered in ``hub/info``, so the token works
+              once, on the hub whose key it names (Docs/Devices/protocol.md
+              section 2)
 - The hub verifies the signature against the embedded public key and treats
   the key as the connection identity (owner/host/group permissions).
-- Hub keys learned from ``hub/info`` are pinned in ``hubs.json`` beside the
-  key file: ``{"<address>": "<hub SPKI>"}`` (see :class:`HubPins`).
+- Hub keys proved in ``hub/info`` are pinned in ``hubs.json`` beside the key
+  file: ``{"<address>": "<hub SPKI>"}`` (see :class:`HubPins`).
 
 Usage::
 
     from hub_service_py.keychain import sign, public_key
 
-    token = sign()                    # v0 token for a connect
-    token = sign(hub_key=hub_key)     # v1 token bound to one hub
+    token = sign(hub_key, challenge)  # a token for one connect to one hub
     pub = public_key()                # the service's public key (identity)
 """
 
@@ -45,6 +43,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 # by SPKI DER public key (44 bytes for ed25519).
 PRIVATE_DER_LENGTH = 48
 PUBLIC_DER_LENGTH = 44
+# Sent as the ``v`` header next to ``auth``.
+AUTH_VERSION = "1"
 
 _key_path: Path | None = None
 _private_key: Ed25519PrivateKey | None = None
@@ -147,20 +147,16 @@ def sign_data(data: str) -> str:
     return base64.b64encode(_load_or_generate().sign(data.encode())).decode()
 
 
-def token(key: Ed25519PrivateKey, expiry: int, hub_key: str | None = None) -> str:
-    """An auth token for an exact expiry; v1 (hub-bound) when hub_key is set."""
-    data = f"hub1:{hub_key}:{expiry}" if hub_key else f"{expiry}"
-    signature = key.sign(data.encode())
-    return f"key.{spki(key)}.{base64.b64encode(signature).decode()}.{expiry}"
+def token(key: Ed25519PrivateKey, expiry: int, hub_key: str, nonce: str) -> str:
+    """An auth token for an exact expiry, one hub and one challenge."""
+    signature = key.sign(f"hub1:{hub_key}:{nonce}:{expiry}".encode())
+    return f"key.{spki(key)}.{base64.b64encode(signature).decode()}.{expiry}.{nonce}"
 
 
-def sign(expires: int = 60, hub_key: str | None = None) -> str:
-    """A fresh auth token: ``key.<pub>.<sig>.<expiry>``.
-
-    hub_key: the pinned hub key; signs ``hub1:<hub key>:<expiry>`` (send it
-    with ``v: 1``). Without it the token is v0 (the expiry alone).
-    """
-    return token(_load_or_generate(), int(time.time()) + expires, hub_key)
+def sign(hub_key: str, nonce: str, expires: int = 30) -> str:
+    """A fresh auth token for one connection to the hub with key hub_key, over
+    the challenge it answered in ``hub/info``."""
+    return token(_load_or_generate(), int(time.time()) + expires, hub_key, nonce)
 
 
 def pin_address(address: int | str) -> str:

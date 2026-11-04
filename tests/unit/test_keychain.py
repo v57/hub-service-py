@@ -16,24 +16,24 @@ TS_PUB = "MCowBQYDK2VwAyEAHZSDpmbLRjLrOyNMugsStFqK5EYcNluUekE4di+FalQ="
 
 def test_sign_token_shape():
     keychain.set_key_path("/tmp/hub_service_py_test_auth")
-    token = keychain.sign()
+    token = keychain.sign("hub-key", "nonce")
     parts = token.split(".")
     assert parts[0] == "key"
     assert parts[1] == keychain.public_key()
     assert parts[2]  # signature
     assert re.fullmatch(r"\d+", parts[3])  # decimal expiry (TS parity)
     assert int(parts[3]) >= int(__import__("time").time())
+    assert parts[4] == "nonce"
 
 
 def test_signature_verifies():
     keychain.set_key_path("/tmp/hub_service_py_test_auth_2")
-    token = keychain.sign(expires=30)
-    _, pub_b64, sig_b64, expiry = token.split(".")
+    token = keychain.sign("hub-key", "nonce", expires=30)
+    _, pub_b64, sig_b64, expiry, nonce = token.split(".")
     # pub_b64 is the 44-byte SPKI DER; the raw key is its last 32 bytes.
     spki = base64.b64decode(pub_b64)
     pub = Ed25519PublicKey.from_public_bytes(spki[-32:])
-    pub.verify(base64.b64decode(sig_b64), expiry.encode())
-    # signature is over the decimal expiry string
+    pub.verify(base64.b64decode(sig_b64), f"hub1:hub-key:{nonce}:{expiry}".encode())
     assert len(base64.b64decode(sig_b64)) == 64
 
 
@@ -57,10 +57,10 @@ def test_loads_ts_generated_key():
 
     pathlib.Path("/tmp/hub_service_py_ts_auth").write_text(TS_AUTH)
     assert keychain.public_key() == TS_PUB
-    token = keychain.sign()
+    token = keychain.sign("hub-key", "nonce")
     parts = token.split(".")
     assert parts[1] == TS_PUB
     # Signature verifies against the TS public key.
     spki = base64.b64decode(TS_PUB)
     pub = Ed25519PublicKey.from_public_bytes(spki[-32:])
-    pub.verify(base64.b64decode(parts[2]), parts[3].encode())
+    pub.verify(base64.b64decode(parts[2]), f"hub1:hub-key:nonce:{parts[3]}".encode())

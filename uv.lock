@@ -99,6 +99,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aioquic", marker = "extra == 'quic'", specifier = ">=1.2.0" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.1.0" },
@@ -106,7 +107,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.22.1" },
     { name = "websockets", specifier = ">=15.0.1" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["quic", "dev"]
 
 [[package]]
 name = "colorama"

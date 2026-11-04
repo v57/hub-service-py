@@ -19,6 +19,7 @@ from .app import (
     zstack,
 )
 from .device import Device
+from .hub_proof import HubTransport, hub_info_signed_data, hub_transport_of, make_client_nonce, verify_hub_proof
 from .service import (
     ApiSettings,
     AppHeader,
@@ -42,6 +43,7 @@ __all__ = [
     "Caller",
     "CallerDevice",
     "Device",
+    "HubTransport",
     "Profile",
     "Request",
     "Service",
@@ -53,13 +55,17 @@ __all__ = [
     "file_operation",
     "files",
     "hstack",
+    "hub_info_signed_data",
+    "hub_transport_of",
     "list_",
+    "make_client_nonce",
     "picker",
     "progress",
     "slider",
     "spacer",
     "text",
     "text_field",
+    "verify_hub_proof",
     "vstack",
     "zstack",
 ]

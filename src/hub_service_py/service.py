@@ -3,8 +3,8 @@
 Port of hub-service (TS reference). The wire contract matches the TS/Go
 reference — hub/profile/update and hub/service/update are re-sent on every
 (re)connect (the hub drops services on disconnect). Auth follows
-Docs/Devices/protocol.md: v0 tokens until the hub key is pinned from
-hub/info, hub-bound v1 tokens after that.
+Docs/Devices/protocol.md section 2: every (re)connect asks the hub to prove its
+key and sends a fresh token for that answer alone (see hub_proof.py).
 """
 
 from __future__ import annotations
@@ -21,7 +21,12 @@ from channel_py.client import ConnectOptions, connect_channel
 
 from hub_service_py import keychain
 from hub_service_py.device import Device
+from hub_service_py.hub_proof import HubProof, HubTransport, ask_hub, hub_transport_of
 from hub_service_py.network import NetworkPublisher
+
+# Retry delays (seconds) for a hub that doesn't prove its key, or can't be reached.
+HANDSHAKE_RETRY = 1.0
+HANDSHAKE_MAX_RETRY = 30.0
 
 
 class ServiceNotStartedError(RuntimeError):
@@ -36,7 +41,11 @@ class ServiceOptions:
     name:    profile name shown in the hub.
     icon:    profile icon: a string or {"symbol": ..., "text": ...}.
     hub_key: the hub's key when known up front (an invitation or config);
-             otherwise it is learned from hub/info and pinned.
+             otherwise the first key a hub proves is pinned.
+    allow_plaintext: dial plain ws:// beyond loopback, the overlay and the LAN,
+             which would carry the key unencrypted: for private networks the
+             SDK can't recognize, such as a container's ws://hub:1997. Also
+             ``HUB_ALLOW_PLAINTEXT=1``.
     instance: this service's name on its device, unique per device
              (``s3-local/Backup Disk``). Default: ``HUB_INSTANCE``, else
              name, else the cwd name, else ``service``.
@@ -52,6 +61,7 @@ class ServiceOptions:
     hub_key: str | None = None
     instance: str | None = None
     device: "bool | Device" = True
+    allow_plaintext: bool = False
 
 
 @dataclass
@@ -173,7 +183,7 @@ class Service:
         self,
         options: ServiceOptions | dict[str, Any] | None = None,
         *,
-        sign: Callable[..., str | Awaitable[str]] | None = None,
+        sign: Callable[[str, str], str | Awaitable[str]] | None = None,
         sign_challenge: Callable[[str], str | Awaitable[str]] | None = None,
     ) -> None:
         """Create a service.
@@ -181,10 +191,9 @@ class Service:
         options: ServiceOptions (address/name/icon/hub_key).
         sign:    optional token factory for hub-server auth (default: the
                  keychain ``auth`` file in the cwd, TS parity). The token is
-                 attached as the ``auth`` header on every (re)connect. A
-                 factory that takes one argument gets the pinned hub key (or
-                 None) and must sign v1 when it is set; one without arguments
-                 always connects with v0.
+                 attached as the ``auth`` header on every (re)connect. It gets
+                 the key the hub proved and the challenge of this connect, and
+                 runs only after the proof.
         sign_challenge: signs Hub Network agent challenges with the service
                  key (default: the keychain ``auth`` file).
         """
@@ -211,8 +220,11 @@ class Service:
         self._paths: set[str] = set()
         self.sender: Any = None  # ClientSender once started
         self.profile: Profile | None = None
-        self.sign = sign if sign is not None else (lambda hub_key=None: keychain.sign(hub_key=hub_key))
-        self._sign_takes_hub_key = _takes_argument(self.sign)
+        self.sign = sign if sign is not None else keychain.sign
+        self.allow_plaintext = opts.allow_plaintext or os.environ.get("HUB_ALLOW_PLAINTEXT") == "1"
+        # Why start() dialed nothing, or why the attempt being held back failed.
+        self._refusal: str | None = None
+        self._handshake_error: str | None = None
         self.sign_challenge = sign_challenge if sign_challenge is not None else keychain.sign_data
         self._service_key: str | None = None
         # Hub Network shares; the agent socket is network.agent_socket.
@@ -324,6 +336,14 @@ class Service:
         """
         if self.sender is not None:
             return self
+        self._refusal = None
+        if not self.allow_plaintext and hub_transport_of(self.address) == HubTransport.REFUSED:
+            self._refusal = (
+                f"{self.target} would carry this service's key unencrypted. Use wss://, "
+                "or set allow_plaintext (HUB_ALLOW_PLAINTEXT=1) on a private network"
+            )
+            print(f"hub-service: {self._refusal}", file=sys.stderr)
+            return self
         self.sender = connect_channel(
             self.channel,
             self.address,
@@ -334,6 +354,12 @@ class Service:
         )
         return self
 
+    def stop(self) -> None:
+        """Disconnect from the hub and stop reconnecting, ending a wait for its proof."""
+        sender, self.sender = self.sender, None
+        if sender is not None:
+            sender.stop()
+
     @property
     def pins(self) -> keychain.HubPins:
         """Pinned hub keys: ``hubs.json`` beside the service key file."""
@@ -341,8 +367,9 @@ class Service:
 
     @property
     def hub_key(self) -> str | None:
-        """The hub key this service signs for: supplied, else pinned. The pin
-        is read from hubs.json at each connect and kept in memory."""
+        """The hub key this service expects: supplied, else pinned, else None
+        until a hub proved one. The pin is read from hubs.json at each connect
+        and kept in memory."""
         if self._hub_key:
             return self._hub_key
         if not self._pin_loaded:
@@ -351,34 +378,69 @@ class Service:
         return self._pinned
 
     def forget_hub_key(self) -> None:
-        """Clear the pinned hub key; the next connect learns it again (v0)."""
+        """Clear the pinned hub key; the next connect pins what the hub proves."""
         self._hub_key = None
         self._pinned = None
         self.pins.forget(self.target)
 
     @property
     def last_error(self) -> str | None:
-        """Why the last connection attempt failed, if it did. A refused v1
-        connect (``invalid signature``: the hub key changed or a different
-        server answers) shows up here; the SDK never falls back to v0."""
+        """Why the service isn't connected, if it knows: a refused address, a hub
+        that didn't prove its key or answers with another than the pinned one,
+        or a refused connect (``invalid signature``, ``invalid nonce``)."""
+        if self._refusal is not None:
+            return self._refusal
+        if self._handshake_error is not None:
+            return self._handshake_error
         if self.sender is None:
             return None
         return self.sender.ws.close_error
 
     async def _auth_headers(self) -> dict[str, str]:
-        """Auth headers for hub-server: a fresh signed token + protocol version."""
+        """Runs before every connection attempt (protocol.md section 2). It comes
+        back with a token over a fresh challenge from a hub that proved its key;
+        until one has, it holds the attempt back, so nothing goes out and requests
+        keep waiting. stop() cancels it."""
+        delay = HANDSHAKE_RETRY
+        reported = None
+        while True:
+            try:
+                headers = await self._handshake()
+                self._handshake_error = None
+                return headers
+            except Exception as error:
+                self._handshake_error = str(error) or type(error).__name__
+                if self._handshake_error != reported:
+                    reported = self._handshake_error
+                    print(f"hub-service: {reported}", file=sys.stderr)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, HANDSHAKE_MAX_RETRY)
+
+    async def _handshake(self) -> dict[str, str]:
+        """Asks the hub for its proof and signs for that answer alone."""
+        try:
+            proof: HubProof = await ask_hub(self.address)
+        except Exception as error:
+            raise ConnectionError(f"{self.target}: {error}, sending it nothing") from error
         self._pin_loaded = False  # pick up a pin another process wrote
-        hub_key = self.hub_key if self._sign_takes_hub_key else None
-        token = self.sign(hub_key) if self._sign_takes_hub_key else self.sign()
-        if asyncio.iscoroutine(token) or hasattr(token, "__await__"):
-            token = await token  # type: ignore[assignment]
-        headers = {"auth": str(token), "v": "1" if hub_key else "0"}
+        pinned = self.hub_key
+        if pinned is None:
+            self.pins.set(self.target, proof.key)
+            self._pinned, self._pin_loaded = proof.key, True
+        elif pinned != proof.key:
+            raise ConnectionError(
+                f"{self.target} answers with key {proof.key}, not the pinned {pinned}, sending it nothing. "
+                "forget_hub_key() if its key really changed"
+            )
+        token = self.sign(proof.key, proof.challenge)
+        if inspect.isawaitable(token):
+            token = await token
+        headers = {"auth": str(token), "v": keychain.AUTH_VERSION}
         self._service_key = headers["auth"].split(".")[1]
         if self.device is not None:
             # The certificate names the key in the token, whoever signed it.
-            service_key = headers["auth"].split(".")[1]
             try:
-                headers["device"] = self.device.certificate(service_key, self.instance)
+                headers["device"] = self.device.certificate(self._service_key, self.instance)
             except (OSError, ValueError):
                 pass  # no readable or creatable device key: a plain key connection
         return headers
@@ -402,7 +464,7 @@ class Service:
 
     def _sender_or_error(self) -> Any:
         if self.sender is None:
-            raise ServiceNotStartedError("Service not started")
+            raise ServiceNotStartedError(self._refusal or "Service not started")
         return self.sender
 
     async def _on_connect(self, sender: Any) -> None:
@@ -428,8 +490,6 @@ class Service:
             asyncio.create_task(_quiet_send(sender, "hub/service/update", self.update()))
         except Exception:
             pass
-        if self.hub_key is None and self._sign_takes_hub_key:
-            asyncio.create_task(self._learn_hub_key(sender))
         if self.network.has_shares:
             asyncio.create_task(self._republish(sender))
 
@@ -485,22 +545,6 @@ class Service:
     def share_publication(self, name: str) -> dict[str, Any] | None:
         return self.network.publication(name)
 
-    async def _learn_hub_key(self, sender: Any) -> None:
-        """Pin the hub key from hub/info, then reconnect with v1 at once.
-        hub-lite doesn't answer hub/info, so the service stays on v0 there."""
-        try:
-            info = await asyncio.wait_for(sender.send("hub/info"), 10)
-        except Exception:
-            return
-        key = info.get("key") if isinstance(info, dict) else None
-        if not isinstance(key, str) or not key or self.hub_key is not None:
-            return
-        self.pins.set(self.target, key)
-        self._pinned, self._pin_loaded = key, True
-        ws = self.sender.ws.ws if self.sender is not None else None
-        if ws is not None:
-            await ws.close()
-
 
 def _share(name: str, protocol: str, host: str, port: int, policy: dict[str, Any] | None) -> dict[str, Any]:
     return {
@@ -523,17 +567,6 @@ def _positional_count(function: Callable[..., Any]) -> int:
         if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
             count += 1
     return count
-
-
-def _takes_argument(function: Callable[..., Any]) -> bool:
-    """Whether a sign factory accepts the hub key as its first argument."""
-    try:
-        parameters = inspect.signature(function).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL) for p in parameters
-    )
 
 
 async def _quiet_send(sender: Any, path: str, body: Any) -> None:

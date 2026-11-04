@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from channel_py.channel import Channel
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from fake_hub import answer_hub_info
 
 from hub_service_py import Service, ServiceOptions, keychain
 from hub_service_py.network import LocalAgentError, NetworkPublisher, validate_share
@@ -107,6 +108,7 @@ def hub_channel(replaced: list) -> Channel:
 
     hub.post("network/shares/replace", replace)
     hub.post("hub/service/update", lambda ctx: None)
+    answer_hub_info(hub)
     return hub
 
 

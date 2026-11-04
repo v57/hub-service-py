@@ -19,7 +19,7 @@ uv sync --extra dev   # path dependency on ../../Channel/channel-py (see [tool.u
 
 ## Usage
 
-Start a hub first (`new Hub()` from hub-lite, listens on 1997), then:
+Start a hub first (hub-server, listens on 1997), then:
 
 ```python
 import asyncio
@@ -61,8 +61,9 @@ response = await service.send("echo/upper", "hello")  # "HELLO"
 
 ## API
 
-- `Service(options?)` — `address` (port or ws:// URL; default `1997` or
-  `$HUB`), `name`, `icon`
+- `Service(options?, sign=?)` — `address` (port or ws:// URL; default `1997` or
+  `$HUB`), `name`, `icon`, `allow_plaintext`; `sign(hub_key, challenge)` is a
+  custom token factory given the proven hub key and the challenge
 - `post(path, handler(body) -> resp, settings?) -> Service` — handler may be
   sync or async
 - `stream(path, handler(body) -> async iterator of values, settings?) -> Service`
@@ -78,6 +79,7 @@ response = await service.send("echo/upper", "hello")  # "HELLO"
 - `values(path, body?, context?)` — stream call through the hub
 - `start() -> Service` — connect; re-announces `hub/profile/update` (if set)
   and `hub/service/update` on every reconnect
+- `stop()` — disconnect and stop reconnecting, ending a wait for the hub's proof
 
 `ApiSettings` carries `permissions` (group auto-filled from the first path
 segment, TS parity) and `limit` — wire-parity fields that hub-lite ignores.
@@ -90,11 +92,19 @@ shorthand text.
 
 - **Service key:** the `auth` file in the cwd (TS layout), sent as a signed
   `auth` token on every connect.
-- **Hub key:** the first connect uses `v: 0` and calls `hub/info`; the hub key
-  is pinned in `hubs.json` beside the `auth` file and later connects sign
-  `hub1:<hub key>:<expiry>` with `v: 1`. hub-lite stays on v0.
+- **Hub key:** before every connect the service asks `hub/info` with a fresh
+  nonce on a short anonymous connection. Only an answer with a valid proof of
+  the key it claims gets a token, signing `hub1:<hub key>:<challenge>:<expiry>`
+  with `v: 1`. The first proven key is pinned in `hubs.json` beside the `auth`
+  file. A hub that doesn't prove its key, or answers with another than the
+  pinned one, gets nothing and is reported while the service keeps trying, so
+  calls made right after `start()` wait instead of being lost.
   `ServiceOptions(hub_key=...)` supplies it up front and
   `service.forget_hub_key()` clears the pin.
+- **Transport:** plain `ws://` beyond loopback, the overlay and the LAN isn't
+  dialed unless `ServiceOptions(allow_plaintext=True)` or
+  `HUB_ALLOW_PLAINTEXT=1` says so; `hub_transport_of(address)` classifies an
+  address.
 - **Device:** a certificate signed by `~/.hub/device.key` (`HUB_DEVICE_KEY`
   overrides it) goes in the `device` header and is renewed with less than a
   day left. `ServiceOptions(instance=..., device=False | Device(...))` sets

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from channel_py.channel import Channel
+from fake_hub import answer_hub_info
 
 from hub_service_py import Caller, CallerDevice, Service, ServiceOptions
 
@@ -35,6 +36,7 @@ async def test_handlers_get_the_caller(tmp_path, monkeypatch):
     results: dict = {}
     done = asyncio.Event()
     hub = Channel()
+    answer_hub_info(hub)
 
     async def call_back(ctx):
         sender = ctx.sender
